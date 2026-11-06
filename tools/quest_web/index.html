@@ -1,0 +1,412 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dropbear Quest</title>
+<style>
+  :root { --bg: #0f1216; --panel: rgba(20, 24, 30, 0.86); --line: rgba(255, 255, 255, 0.12); --text: #e8ebef;
+    --muted: #9aa3ad; --accent: #f2b33d; --ok: #58c48b; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); overflow: hidden;
+    font: 16px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  #view { position: fixed; inset: 0; }
+  #ui { position: fixed; top: 16px; left: 16px; width: min(380px, calc(100vw - 32px)); padding: 16px;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px; }
+  h1 { font-size: 18px; margin: 0 0 4px; font-weight: 600; }
+  #state { color: var(--muted); font-size: 14px; font-variant-numeric: tabular-nums; }
+  #state b { color: var(--ok); font-weight: 500; }
+  button { width: 100%; margin: 12px 0; padding: 14px; font: inherit; font-weight: 600; color: #1b1407;
+    background: var(--accent); border: 0; border-radius: 10px; cursor: pointer; }
+  button:disabled { opacity: .45; cursor: default; }
+  ul { margin: 0; padding-left: 18px; color: var(--muted); font-size: 14px; }
+  #hud { position: fixed; top: 16px; right: 16px; width: min(560px, calc(100vw - 32px)); height: auto; border-radius: 12px; }
+  @media (max-width: 1000px) { #hud { top: auto; bottom: 16px; } }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="view"></div>
+<canvas id="hud" width="1024" height="760" aria-label="Arm motors: angle, torque and speed against the datasheet limits"></canvas>
+<div id="ui">
+  <h1>Dropbear arm teleop</h1>
+  <div id="state">connecting…</div>
+  <button id="enter" disabled>Checking headset…</button>
+  <ul>
+    <li>Hold a <b>grip</b>: that arm follows your hand. Let go: it stays.</li>
+    <li>In front of the robot, it mirrors you.</li>
+    <li><b>Left stick</b> moves the robot in the room, <b>right stick</b> turns it.</li>
+    <li><b>A</b> or <b>X</b> shows or hides the motors. <b>Both sticks</b> in: stop.</li>
+  </ul>
+</div>
+<script type="module">
+import * as THREE from "three";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+
+// ?emulate: a simulated Quest 3 in a desktop browser (tests only); window.xrDevice drives it
+if (new URLSearchParams(location.search).has("emulate")) {
+  const { XRDevice, metaQuest3 } = await import("https://esm.sh/iwer@2");
+  const dev = new XRDevice(metaQuest3);
+  dev.installRuntime({ forceInstall: true });
+  window.xrDevice = dev;
+}
+
+const N_BUTTONS = 5, RX_ROBOT = 48 + 2 * N_BUTTONS, RX_LEN = RX_ROBOT + 3 + 1;
+const PHASE_TEXT = ["waiting for the simulator", "moving to the standing pose", "settling", "ready", "going home"];
+const el = (id) => document.getElementById(id);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.xr.enabled = true;
+renderer.xr.setReferenceSpaceType("local-floor");
+renderer.xr.setFoveation(1);
+el("view").appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const flatBackground = new THREE.Color(0x151a21);
+scene.background = flatBackground;
+const flatCamera = new THREE.PerspectiveCamera(40, innerWidth / innerHeight, 0.05, 100);
+flatCamera.position.set(-2.2, 1.5, 2.4);  // over the robot's shoulder, as the operator sees it
+const orbit = new OrbitControls(flatCamera, renderer.domElement);
+orbit.target.set(0, 1.1, -1.0);
+scene.add(new THREE.HemisphereLight(0xeef3fb, 0x3a3f46, 1.6));
+const sun = new THREE.DirectionalLight(0xffffff, 1.8);
+sun.position.set(1, 4, 2);
+scene.add(sun);
+const floor = new THREE.Mesh(new THREE.CircleGeometry(4, 48), new THREE.MeshStandardMaterial({ color: 0x2b3038, roughness: 0.95 }));
+floor.rotation.x = -Math.PI / 2;
+scene.add(floor);
+
+// base (where the robot stands in the room) -> y-up, robot x forward = -z -> the robot's z-up world
+const base = new THREE.Group();
+base.position.set(0, 0, -1.0);
+scene.add(base);
+const align = new THREE.Group();
+align.rotation.y = Math.PI / 2;
+base.add(align);
+const world = new THREE.Group();
+world.rotation.x = -Math.PI / 2;
+align.add(world);
+
+const nodes = {};
+let armNames = [];
+const rootP = new THREE.Vector3(), rootQ = new THREE.Quaternion();
+const markerMat = { left: new THREE.MeshBasicMaterial({ color: 0x8a919a }), right: new THREE.MeshBasicMaterial({ color: 0x8a919a }) };
+const marker = {};
+for (const side of ["left", "right"]) {
+  marker[side] = new THREE.Mesh(new THREE.SphereGeometry(0.03, 16, 12), markerMat[side]);
+  world.add(marker[side]);
+}
+
+const stand = await (await fetch("/stand.json")).json();
+armNames = stand.arm;
+const motorInfo = await (await fetch("/motors.json")).json();
+const TX_MOTORS = motorInfo.tx_motors, TX_BODIES = motorInfo.tx_bodies, MOTORS = motorInfo.motors;
+new GLTFLoader().load("/dropbear.glb", (g) => {
+  for (const n of [...g.scene.children]) {
+    n.traverse((o) => { if (o.isMesh) { o.material.roughness = 0.6; o.material.metalness = 0.05; } });
+    world.add(n);
+    nodes[n.name] = n;
+  }
+  stand.names.forEach((name, i) => {
+    const n = nodes[name];
+    if (!n) return;
+    n.position.fromArray(stand.p[i]);
+    n.quaternion.set(stand.q[i][1], stand.q[i][2], stand.q[i][3], stand.q[i][0]);
+  });
+  // the CAD's root is not on the body's midline: centre the robot on the base, so it turns about its own middle
+  const armY = (prefix) => { const ys = stand.names.flatMap((name, i) => name.startsWith(prefix) ? [stand.p[i][1]] : []); return ys.reduce((s, y) => s + y, 0) / ys.length; };
+  world.position.z = 0.5 * (armY("LH_") + armY("RH_"));
+  const r = stand.names.indexOf("world");
+  rootP.fromArray(stand.p[r]);
+  rootQ.set(stand.q[r][1], stand.q[r][2], stand.q[r][3], stand.q[r][0]);
+  el("state").dataset.loaded = "1";
+});
+
+// a small status label over the robot's head, readable in the headset
+const labelCanvas = Object.assign(document.createElement("canvas"), { width: 1024, height: 128 });
+const labelTexture = new THREE.CanvasTexture(labelCanvas);
+labelTexture.colorSpace = THREE.SRGBColorSpace;
+const label = new THREE.Mesh(new THREE.PlaneGeometry(0.8, 0.1), new THREE.MeshBasicMaterial({ map: labelTexture, transparent: true }));
+label.position.set(0, 1.85, 0);
+base.add(label);
+let labelText = null;
+function setLabel(text) {
+  if (text === labelText) return;
+  labelText = text;
+  const c = labelCanvas.getContext("2d");
+  c.clearRect(0, 0, 1024, 128);
+  c.fillStyle = "rgba(15,18,22,0.78)";
+  c.roundRect(0, 0, 1024, 128, 28);
+  c.fill();
+  c.fillStyle = "#e8ebef";
+  c.font = "600 52px system-ui, sans-serif";
+  c.textAlign = "center";
+  c.textBaseline = "middle";
+  c.fillText(text, 512, 66);
+  label.material.map.needsUpdate = true;
+}
+setLabel("connecting…");
+
+// ------------------------------------------------------------------- the motors against their datasheet limits
+// One canvas: on the PC it is on the page, in the headset it is a panel beside the robot. Live values, at the display rate;
+// tools/teleop_gate.py judges the full-rate log afterwards.
+const HUD = { good: "#58c48b", warn: "#f2b33d", bad: "#e5484d", ink: "#e8ebef", muted: "#9aa3ad", track: "#2c323a", tick: "#ffffff" };
+const hudCanvas = el("hud"), hudCtx = hudCanvas.getContext("2d");
+const hudTexture = new THREE.CanvasTexture(hudCanvas);
+hudTexture.colorSpace = THREE.SRGBColorSpace;
+const panel = new THREE.Mesh(new THREE.PlaneGeometry(0.72, 0.72 * hudCanvas.height / hudCanvas.width),
+  new THREE.MeshBasicMaterial({ map: hudTexture, transparent: true }));
+panel.visible = false;
+scene.add(panel);
+let panelOn = true;
+const motorNow = MOTORS.map(() => ({ q: 0, dq: 0, tau: 0, max: 0, rms2: 0 }));
+const RMS_WINDOW_S = 5;
+let motorT = 0, hudDirty = true, hudNext = 0;
+
+function readMotors(s) {
+  const dt = motorT > 0 ? Math.min(Math.max(s[0] - motorT, 0), 0.2) : 0;
+  motorT = s[0];
+  MOTORS.forEach((m, i) => {
+    const o = TX_MOTORS + 3 * i, v = motorNow[i];
+    v.q = s[o]; v.dq = s[o + 1]; v.tau = s[o + 2];
+    v.max = Math.max(v.max, Math.abs(v.tau));
+    v.rms2 += (v.tau * v.tau - v.rms2) * Math.min(dt / RMS_WINDOW_S, 1);
+  });
+  hudDirty = true;
+}
+
+// what the motor can give right now: the torque-speed line when it drives, the current limit when it brakes
+function available(m, v) {
+  if (v.tau * v.dq <= 0) return m.peak;
+  return Math.max(0, Math.min(m.saturation * (1 - Math.abs(v.dq) / m.no_load), m.peak));
+}
+
+function motorStatus(m, v) {
+  const deg = v.q * 180 / Math.PI, [lo, hi] = m.limits_deg;
+  if (Math.abs(v.tau) >= 0.98 * available(m, v)) return [2, "at its torque limit"];
+  if (Math.abs(v.dq) >= 0.95 * m.no_load) return [2, "at its speed limit"];
+  if (Math.sqrt(v.rms2) > m.rated) return [1, "above rated torque (5 s)"];
+  if (Math.abs(v.dq) >= 0.8 * m.no_load) return [1, "near its speed limit"];
+  if (deg < lo + 1.5 || deg > hi - 1.5) return [1, "at its stop"];
+  return [0, ""];
+}
+
+function drawHud() {
+  const c = hudCtx, W = hudCanvas.width, H = hudCanvas.height;
+  c.clearRect(0, 0, W, H);
+  c.fillStyle = "rgba(15,18,22,0.92)";
+  c.beginPath();
+  c.roundRect(0, 0, W, H, 24);
+  c.fill();
+  const text = (s, x, y, color, font, align = "left") => {
+    c.fillStyle = color; c.font = font; c.textAlign = align; c.textBaseline = "middle"; c.fillText(s, x, y);
+  };
+  let worst = [0, "all within the datasheet limits"], worstName = "";
+  MOTORS.forEach((m, i) => {
+    const st = motorStatus(m, motorNow[i]);
+    if (st[0] > worst[0]) { worst = st; worstName = m.label + " "; }
+  });
+  text("Arm motors", 24, 36, HUD.ink, "600 34px system-ui, sans-serif");
+  text(`${worstName}${worst[1]}`, W - 24, 36, worst[0] === 2 ? HUD.bad : worst[0] === 1 ? HUD.warn : HUD.good, "500 26px system-ui, sans-serif", "right");
+  const X_ANGLE = 372, X_TAU = 388, W_TAU = 300, X_TAU_N = 776, X_SPD = 790, W_SPD = 146, X_SPD_N = W - 20;
+  const yHead = 80;
+  text("angle", X_ANGLE, yHead, HUD.muted, "22px system-ui, sans-serif", "right");
+  text("torque, N·m", X_TAU, yHead, HUD.muted, "22px system-ui, sans-serif");
+  text("speed, rad/s", X_SPD, yHead, HUD.muted, "22px system-ui, sans-serif");
+  const rowH = 57;
+  MOTORS.forEach((m, i) => {
+    const v = motorNow[i], y = 104 + rowH * i + (i >= 5 ? 12 : 0), mid = y + rowH / 2;
+    const tauA = Math.abs(v.tau), avail = available(m, v), rms = Math.sqrt(v.rms2);
+    text(m.label, 24, mid - 10, HUD.ink, "500 27px system-ui, sans-serif");
+    text(`ID ${m.can_id} · ${m.model.replace("RMD-", "").replace(/-V\d.*$/, "")}`, 24, mid + 15, HUD.muted, "20px system-ui, sans-serif");
+    text(`${Math.round(v.q * 180 / Math.PI) || 0}°`, X_ANGLE, mid, HUD.ink, "500 27px system-ui, sans-serif", "right");
+    // torque: the track is the peak; ticks at rated, at what is available now and at the session's maximum
+    const yBar = mid - 15, hBar = 20, frac = (x) => Math.min(x / m.peak, 1);
+    c.fillStyle = HUD.track;
+    c.fillRect(X_TAU, yBar, W_TAU, hBar);
+    c.fillStyle = tauA >= 0.98 * avail ? HUD.bad : tauA > m.rated ? HUD.warn : HUD.good;
+    c.fillRect(X_TAU, yBar, W_TAU * frac(tauA), hBar);
+    c.fillStyle = HUD.muted;
+    c.fillRect(X_TAU + W_TAU * frac(m.rated) - 1, yBar - 4, 2, hBar + 8);
+    c.fillStyle = HUD.bad;
+    if (avail < m.peak) c.fillRect(X_TAU + W_TAU * frac(avail) - 1, yBar - 4, 3, hBar + 8);
+    c.fillStyle = HUD.tick;
+    c.fillRect(X_TAU + W_TAU * frac(v.max) - 1, yBar, 2, hBar);
+    // under it, thin: the last few seconds' RMS, the number that heats the motor
+    c.fillStyle = HUD.track;
+    c.fillRect(X_TAU, yBar + hBar + 5, W_TAU, 6);
+    c.fillStyle = rms > m.rated ? HUD.warn : HUD.good;
+    c.fillRect(X_TAU, yBar + hBar + 5, W_TAU * frac(rms), 6);
+    text(tauA.toFixed(1), X_TAU_N, mid - 2, HUD.ink, "500 27px system-ui, sans-serif", "right");
+    // speed: the track is the no-load speed at this supply
+    const sp = Math.abs(v.dq), spFrac = Math.min(sp / m.no_load, 1);
+    c.fillStyle = HUD.track;
+    c.fillRect(X_SPD, yBar, W_SPD, hBar);
+    c.fillStyle = spFrac >= 0.95 ? HUD.bad : spFrac >= 0.8 ? HUD.warn : HUD.good;
+    c.fillRect(X_SPD, yBar, W_SPD * spFrac, hBar);
+    text(sp.toFixed(1), X_SPD_N, mid - 5, HUD.ink, "500 27px system-ui, sans-serif", "right");
+  });
+  text(`Bars end at peak torque and at no-load speed at ${motorInfo.supply_v.toFixed(0)} V.`, 24, H - 50, HUD.muted, "22px system-ui, sans-serif");
+  text("Grey tick: rated. White tick: the most so far. Thin bar: RMS over about 5 s.", 24, H - 22, HUD.muted, "22px system-ui, sans-serif");
+  hudTexture.needsUpdate = true;
+}
+drawHud();
+
+// ------------------------------------------------------------------- state from the simulator
+let ws = null, lastServerT = 0, state = null;
+const relP = new THREE.Vector3(), relQ = new THREE.Quaternion();
+function connect() {
+  ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
+  ws.binaryType = "arraybuffer";
+  ws.onmessage = (e) => {
+    state = new Float64Array(e.data);
+    lastServerT = state[0];
+    armNames.forEach((name, i) => {
+      const n = nodes[name], o = TX_BODIES + 7 * i;
+      if (!n || (state[o + 3] === 0 && state[o + 4] === 0 && state[o + 5] === 0 && state[o + 6] === 0)) return;
+      relP.set(state[o], state[o + 1], state[o + 2]).applyQuaternion(rootQ).add(rootP);
+      relQ.set(state[o + 4], state[o + 5], state[o + 6], state[o + 3]);
+      n.position.copy(relP);
+      n.quaternion.multiplyQuaternions(rootQ, relQ);
+    });
+    for (const [k, side] of ["left", "right"].entries()) {
+      relP.set(state[6 + 3 * k], state[7 + 3 * k], state[8 + 3 * k]).applyQuaternion(rootQ).add(rootP);
+      marker[side].position.copy(relP);
+    }
+    readMotors(state);
+    showState();
+  };
+  ws.onclose = () => { state = null; showState(); setTimeout(connect, 1000); };
+}
+connect();
+
+function showState() {
+  if (!state) { el("state").textContent = "connecting…"; setLabel("no connection to the PC"); return; }
+  const phase = PHASE_TEXT[state[1]] ?? "";
+  const armColor = (engaged, err) => (!engaged ? 0x8a919a : err > 20 ? 0xe5484d : 0x58c48b);
+  markerMat.left.color.setHex(armColor(state[2], state[4]));
+  markerMat.right.color.setHex(armColor(state[3], state[5]));
+  const held = [state[2] ? "left" : "", state[3] ? "right" : ""].filter(Boolean).join(" + ");
+  const reach = (state[2] && state[4] > 20) || (state[3] && state[5] > 20);
+  const idle = inFront && motorInfo.mirror ? "hold a grip: it will mirror you" : "hold a grip to move";
+  const text = state[1] !== 3 ? phase : reach ? "out of reach: let go and re-grip" : held ? `${held} arm following${state[12] ? " (mirror)" : ""}` : idle;
+  el("state").innerHTML = `<b>connected</b> · ${text}`;
+  setLabel(text);
+}
+
+// ------------------------------------------------------------------- entering the headset
+const button = el("enter");
+const supported = navigator.xr && (await navigator.xr.isSessionSupported("immersive-ar").catch(() => false));
+const supportedVr = !supported && navigator.xr && (await navigator.xr.isSessionSupported("immersive-vr").catch(() => false));
+if (supported || supportedVr) {
+  button.disabled = false;
+  button.textContent = supported ? "Enter passthrough" : "Enter VR";
+} else {
+  button.textContent = window.isSecureContext ? "No headset here: PC view only" : "Needs https or localhost";
+}
+button.addEventListener("click", async () => {
+  const session = await navigator.xr.requestSession(supported ? "immersive-ar" : "immersive-vr", { requiredFeatures: ["local-floor"] });
+  await renderer.xr.setSession(session);
+});
+let placed = false;
+renderer.xr.addEventListener("sessionstart", () => { scene.background = null; floor.visible = false; placed = false; panel.visible = panelOn; });
+renderer.xr.addEventListener("sessionend", () => { scene.background = flatBackground; floor.visible = true; panel.visible = false; });
+
+// ------------------------------------------------------------------- the frame loop: read the headset, send, draw
+const packet = new Float64Array(RX_LEN);
+const headM = new THREE.Matrix4(), headPos = new THREE.Vector3(), forward = new THREE.Vector3(), right = new THREE.Vector3();
+const UP = new THREE.Vector3(0, 1, 0);
+const toRobot = new THREE.Vector3(), panelSide = new THREE.Vector3();
+const togglePrev = [false, false];
+let tPrev = 0, inFront = false;
+
+function placeInFront() {
+  // one metre ahead, with its back to you: your left hand is its left arm
+  base.position.set(headPos.x + forward.x, 0, headPos.z + forward.z);
+  base.rotation.y = Math.atan2(-forward.x, -forward.z);
+  placed = true;
+}
+
+function readHeadset(frame, dt) {
+  packet.fill(NaN);
+  const ref = renderer.xr.getReferenceSpace();
+  const viewer = frame.getViewerPose(ref);
+  if (viewer) {
+    packet.set(viewer.transform.matrix, 0);
+    headM.fromArray(viewer.transform.matrix);
+    headPos.setFromMatrixPosition(headM);
+    forward.set(0, 0, -1).transformDirection(headM).setY(0).normalize();
+    right.crossVectors(forward, UP);
+    if (!placed) placeInFront();
+    // the robot's front is (-sin yaw, -cos yaw) in this frame; the same test the PC makes when a grip closes
+    inFront = -Math.sin(base.rotation.y) * (headPos.x - base.position.x) - Math.cos(base.rotation.y) * (headPos.z - base.position.z) > 0;
+    // the label and the motor panel face you; the panel stays beside the robot, on your right
+    toRobot.subVectors(base.position, headPos).setY(0).normalize();
+    panelSide.crossVectors(toRobot, UP);
+    panel.position.copy(base.position).addScaledVector(panelSide, 0.85).setY(1.15);
+    panel.lookAt(headPos);
+    label.lookAt(headPos);
+  }
+  // the room is fixed while a hand is moving an arm: the mapping was set when the grip closed
+  let anyGrip = false;
+  for (const src of frame.session.inputSources) if ((src.gamepad?.buttons[1]?.value ?? 0) >= 0.4) anyGrip = true;
+  for (const src of frame.session.inputSources) {
+    const k = src.handedness === "left" ? 0 : src.handedness === "right" ? 1 : -1;
+    if (k < 0 || !src.gripSpace || !src.gamepad) continue;
+    const pose = frame.getPose(src.gripSpace, ref);
+    if (pose) packet.set(pose.transform.matrix, 16 + 16 * k);
+    const b = src.gamepad.buttons, a = src.gamepad.axes, o = 48 + N_BUTTONS * k;
+    packet[o] = b[1]?.value ?? 0;
+    packet[o + 1] = b[0]?.value ?? 0;
+    packet[o + 2] = b[4]?.pressed ? 1 : 0;
+    packet[o + 3] = b[5]?.pressed ? 1 : 0;
+    packet[o + 4] = b[3]?.pressed ? 1 : 0;
+    const toggle = !!b[4]?.pressed;
+    if (toggle && !togglePrev[k]) { panelOn = !panelOn; panel.visible = panelOn; }
+    togglePrev[k] = toggle;
+    // sticks place the robot in the room (never while a hand is moving an arm)
+    const sx = Math.abs(a[2] ?? 0) > 0.25 ? a[2] : 0, sy = Math.abs(a[3] ?? 0) > 0.25 ? a[3] : 0;
+    if (!anyGrip) {
+      if (k === 0) base.position.addScaledVector(right, sx * dt * 0.8).addScaledVector(forward, -sy * dt * 0.8);
+      else base.rotation.y -= sx * dt * 1.2;
+    }
+  }
+  packet[RX_ROBOT] = base.rotation.y;
+  packet[RX_ROBOT + 1] = base.position.x;
+  packet[RX_ROBOT + 2] = base.position.z;
+  packet[RX_LEN - 1] = lastServerT;
+  if (ws?.readyState === 1 && ws.bufferedAmount < 4096) ws.send(packet);
+}
+
+renderer.setAnimationLoop((t, frame) => {
+  const dt = Math.min((t - tPrev) / 1000, 0.1);
+  tPrev = t;
+  if (frame) readHeadset(frame, dt);
+  else orbit.update();
+  if (hudDirty && t >= hudNext) {  // 8 times a second is plenty to read, and cheap on the headset
+    drawHud();
+    hudDirty = false;
+    hudNext = t + 125;
+  }
+  renderer.render(scene, flatCamera);
+});
+if (window.xrDevice) window.quest = { THREE, base, marker, nodes, motorNow };  // tests only
+function fitWindow() {
+  flatCamera.aspect = innerWidth / innerHeight;
+  flatCamera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+}
+addEventListener("resize", fitWindow);
+fitWindow();  // the window may have changed while the robot was loading
+</script>
+</body>
+</html>

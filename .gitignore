@@ -1,0 +1,16 @@
+# this machine
+.dropbear.env
+.venv*/
+.locks/
+.cache/
+.warp-cache/
+.uv-cache/
+.pytest_cache/
+__pycache__/
+*.pyc
+
+# runs and downloads
+/assets/
+/logs/
+/outputs/
+data/teleop/*/

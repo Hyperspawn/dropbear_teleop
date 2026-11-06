@@ -1,0 +1,8 @@
+* text=auto
+*.py text eol=lf
+*.html text eol=lf
+# Calibration and robot data are pinned by SHA-256: store the exact bytes.
+data/** -text
+assets_manifest.json -text
+*.npz binary
+*.glb binary
