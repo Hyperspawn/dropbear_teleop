@@ -16,7 +16,7 @@ Windows, Python 3.12, [uv](https://docs.astral.sh/uv/), Git LFS. Once:
 
 ```bash
 git lfs install
-git clone -b quest-teleop https://github.com/Hyperspawn/dropbear_teleop
+git clone https://github.com/Hyperspawn/dropbear_teleop
 cd dropbear_teleop
 uv venv --python 3.12 .venv-newton
 uv pip install --python .venv-newton/Scripts/python.exe -r requirements/newton-windows.txt
