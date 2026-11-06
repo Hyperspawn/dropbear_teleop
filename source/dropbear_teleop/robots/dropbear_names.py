@@ -19,7 +19,7 @@ from pathlib import Path
 from dropbear_teleop import paths as _paths
 
 DEFAULT_USD_PATH: str = str(_paths.usd_path())
-"""The plant USD (read-only plant authority): ``$DROPBEAR_USD`` / ``.dropbear.env``, else ``assets/dropbear.usd``
+"""The plant USD (read-only plant authority): ``$DROPBEAR_USD``, else ``assets/dropbear.usd``
 (``python tools/fetch_assets.py`` downloads it). See :mod:`dropbear_teleop.paths`."""
 
 USD_SHA256: str = "45586414b065cd982d487cbd868fe982108b3b8ccec64d3dfcf629652ed8db0f"

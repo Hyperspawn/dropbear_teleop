@@ -1,8 +1,11 @@
 * text=auto
 *.py text eol=lf
+*.js text eol=lf
 *.html text eol=lf
 # Calibration and robot data are pinned by SHA-256: store the exact bytes.
 data/** -text
-assets_manifest.json -text
+logs/** -text
 *.npz binary
 *.glb binary
+# The robot model is 421 MB: Git LFS
+assets/dropbear.usd filter=lfs diff=lfs merge=lfs -text

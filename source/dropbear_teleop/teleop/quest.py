@@ -177,6 +177,13 @@ def _serve(cfg: dict, shared: _Shared, ready) -> None:
         async def stand_json(_):
             return web.Response(text=stand, content_type="application/json")
 
+        async def vendor(request):
+            # explicit type: Windows' registry can map .js to text/plain, and browsers refuse that for a module
+            path = (WEB_DIR / "vendor" / request.match_info["name"]).resolve()
+            if not path.is_relative_to(WEB_DIR / "vendor") or path.suffix != ".js" or not path.is_file():
+                raise web.HTTPNotFound()
+            return web.FileResponse(path, headers={"Content-Type": "text/javascript"})
+
         async def motors_json(_):
             return web.Response(text=motors, content_type="application/json")
 
@@ -216,7 +223,7 @@ def _serve(cfg: dict, shared: _Shared, ready) -> None:
 
         app = web.Application()
         app.add_routes([web.get("/", index), web.get("/dropbear.glb", glb), web.get("/stand.json", stand_json),
-                        web.get("/motors.json", motors_json), web.get("/ws", ws_handler)])
+                        web.get("/motors.json", motors_json), web.get("/vendor/{name:.+}", vendor), web.get("/ws", ws_handler)])
         ssl_ctx = None
         if cfg.get("cert") and cfg.get("key"):
             import ssl

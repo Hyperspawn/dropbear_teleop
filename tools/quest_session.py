@@ -11,7 +11,7 @@ http://localhost:8012 and press "Enter passthrough". The same page on the PC (ht
 Hold a grip to move that arm; press both sticks in to stop. Ctrl-C here also stops. ``--record NAME`` saves the session.
 
 Every session writes a motor log, and when it stops ``tools/teleop_gate.py`` judges it against the datasheets. If this
-window is closed instead, the log is still there: run ``python tools/teleop_gate.py``.
+window is closed instead, the log is still there: run ``.venv-teleop/Scripts/python.exe tools/teleop_gate.py``.
 """
 from __future__ import annotations
 
@@ -121,12 +121,8 @@ def main() -> int:
     print("[session] stopped", flush=True)
     if motor_log.exists() and motor_log.stat().st_size:
         print(f"[session] motors against the datasheets at {a.supply_v:.0f} V:", flush=True)
-        # the system Python first: it usually has matplotlib, for the torque-speed picture (the gate exits 0 pass, 2 fail)
-        for py in filter(None, (shutil.which("python"), sys.executable)):
-            gate = subprocess.run([py, "-u", str(ROOT / "tools" / "teleop_gate.py"), str(motor_log), "--supply-v", str(a.supply_v)],
-                                  cwd=ROOT, env=env)
-            if gate.returncode in (0, 2):
-                break
+        subprocess.run([str(TELEOP_PY), "-u", str(ROOT / "tools" / "teleop_gate.py"), str(motor_log), "--supply-v", str(a.supply_v)],
+                       cwd=ROOT, env=env)
     return rc
 
 

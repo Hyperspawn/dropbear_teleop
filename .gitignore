@@ -1,5 +1,4 @@
 # this machine
-.dropbear.env
 .venv*/
 .locks/
 .cache/
@@ -9,8 +8,19 @@
 __pycache__/
 *.pyc
 
-# runs and downloads
-/assets/
-/logs/
+# runs
 /outputs/
 data/teleop/*/
+/logs/*
+# calibration evidence that the calibration file and the tests name by path
+!/logs/gpu_pipeline/
+/logs/gpu_pipeline/*
+!/logs/gpu_pipeline/calib/
+/logs/gpu_pipeline/calib/*
+!/logs/gpu_pipeline/calib/raw/
+!/logs/calibrate_settle/
+/logs/calibrate_settle/*
+!/logs/calibrate_settle/usd_joint_frames.json
+!/logs/calibrate_settle/raw/
+/logs/calibrate_settle/raw/*
+!/logs/calibrate_settle/raw/semantic_verify.npz

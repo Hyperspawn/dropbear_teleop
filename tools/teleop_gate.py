@@ -10,8 +10,8 @@ Two questions:
 * **Stable?** Fast torque ripple and joint speed while the target is still (a limit cycle shows in both). Also reported:
   tracking error and the damping ratio the gains give on paper with the motor's reflected inertia and the arm's.
 
-    python tools/teleop_gate.py
-    python tools/teleop_gate.py logs/teleop/quest_2026-11-06_14-00.motorlog --supply-v 48
+    .venv-teleop/Scripts/python.exe tools/teleop_gate.py
+    .venv-teleop/Scripts/python.exe tools/teleop_gate.py logs/teleop/quest_2026-11-06_14-00.motorlog --supply-v 48
 
 A simulated log ran on the 48 V line, so the torque the motor would give at a lower voltage is the logged torque clipped
 to the lower line: the motion itself is not re-simulated. A pass in simulation says the motion fits the datasheet with the
@@ -194,7 +194,7 @@ def report(g: dict) -> str:
 
 
 def plot(g: dict, out: Path) -> bool:
-    """Every motor's operating points on its datasheet torque-speed line (needs matplotlib; skipped without it)."""
+    """Every motor's operating points on its datasheet torque-speed line (skipped if matplotlib is missing)."""
     try:
         import matplotlib
         matplotlib.use("Agg")

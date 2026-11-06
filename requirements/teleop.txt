@@ -30,3 +30,4 @@ vuer==0.0.60
 waterbear==2.6.8
 websockets==17.1
 yarl==1.25.1
+matplotlib==3.9.2

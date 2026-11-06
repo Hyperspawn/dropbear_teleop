@@ -1,9 +1,8 @@
 """Dropbear in Newton 1.6 (MuJoCo solver) with Unitree-style per-motor impedance control.
 
-The user's USD (CONTRACTS section 0) is imported through Codex's in-memory
-adapter ``<DROPBEAR_CONTROL_DIR>/tools/newton_dropbear_asset.py`` (github.com/robit-man/dropbear_control)
-(``prepare_stage``: expands instances, gives collision meshes convex-hull
-approximations and orients the tree; path-imported read-only). The 27 loop
+The robot USD (CONTRACTS section 0) is imported through the in-memory adapter
+:mod:`.newton_dropbear_asset` (``prepare_stage``: expands instances, gives collision meshes convex-hull
+approximations and orients the tree). The 27 loop
 closures stay as Newton loop joints, which SolverMuJoCo turns into equality
 constraints.
 
@@ -30,7 +29,6 @@ world frame; quaternions are converted from Newton's xyzw to wxyz on readout.
 from __future__ import annotations
 
 import hashlib
-import importlib.util
 import os
 import time
 from dataclasses import dataclass, field
@@ -44,12 +42,11 @@ import numpy as np
 
 from .. import paths as _paths
 from ..sdk import motors
+from .newton_dropbear_asset import prepare_stage
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_USD = _paths.usd_path()  # $DROPBEAR_USD / .dropbear.env, else assets/dropbear.usd
+DEFAULT_USD = _paths.usd_path()  # $DROPBEAR_USD, else assets/dropbear.usd
 USD_SHA256 = "45586414b065cd982d487cbd868fe982108b3b8ccec64d3dfcf629652ed8db0f"
-# github.com/robit-man/dropbear_control (clone next to this repo, or set DROPBEAR_CONTROL_DIR)
-CODEX_ASSET_MODULE = _paths.dropbear_control_dir() / "tools" / "newton_dropbear_asset.py"
 ROOT_BODY_LABEL = "/humanoid/world"
 GRAVITY = 9.81
 
@@ -70,16 +67,6 @@ def sha256_file(path: Path, chunk: int = 1 << 24) -> str:
         while block := f.read(chunk):
             h.update(block)
     return h.hexdigest()
-
-
-def load_prepare_stage(path: Path = CODEX_ASSET_MODULE):
-    """Path-import Codex's ``prepare_stage`` without modifying ``dropbear_control``."""
-    spec = importlib.util.spec_from_file_location("codex_newton_dropbear_asset", str(path))
-    if spec is None or spec.loader is None:
-        raise ImportError(f"cannot import {path}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module.prepare_stage
 
 
 @dataclass
@@ -320,13 +307,13 @@ class DropbearNewtonPlant:
         sha = sha256_file(usd)
         self.report["usd"] = {"path": str(usd), "sha256": sha, "contract_sha256": USD_SHA256}
         if cfg.verify_sha and sha != USD_SHA256:
-            raise ValueError(f"USD SHA-256 {sha} != contract {USD_SHA256}; pass verify_sha=False to override")
+            raise ValueError(f"USD SHA-256 {sha} != contract {USD_SHA256}; if {usd} is a small text file, the robot model "
+                             "was not downloaded: run `git lfs pull`")
         self.log(f"[plant] USD sha256 ok ({time.perf_counter() - t0:.1f} s)")
 
         t0 = time.perf_counter()
         builder = newton.ModelBuilder()
         newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
-        prepare_stage = load_prepare_stage()
         stage, changes = prepare_stage(usd)
         from pxr import UsdPhysics
 

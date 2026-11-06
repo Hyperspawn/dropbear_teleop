@@ -37,7 +37,7 @@ session.
 peak torque and at no-load speed at the supply voltage (`--supply-v`, default 30 V, the bench supply). Every session writes
 `logs/teleop/quest_<date>.motorlog`, and when it stops `tools/teleop_gate.py` judges it, motor by motor: table, picture of
 the operating points on each torque-speed line, verdict. If the window was closed instead, the log is intact: run
-`python tools/teleop_gate.py` (newest log). The future CAN bridge writes the same log, so the same gate judges real motors.
+`.venv-teleop/Scripts/python.exe tools/teleop_gate.py` (newest log). The future CAN bridge writes the same log, so the same gate judges real motors.
 
 Why it differs from the Vuer path below:
 
